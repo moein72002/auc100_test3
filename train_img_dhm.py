@@ -25,7 +25,7 @@ torch.autograd.set_detect_anomaly(True)
 
 
 current_time = datetime.now().strftime("%H:%M:%S")
-print("Current Time 3: ", current_time)
+print("Current Time 4: ", current_time)
 
 # Arguments
 parser = argparse.ArgumentParser()
@@ -507,7 +507,7 @@ feature_extractor = WideResNet(
         spectral_conv=True,
         spectral_bn=True,
         dropout_rate=0.3,
-        coeff=args.wrn_spectral_norm_coeff,
+        coeff=args.coeff,
         n_power_iterations=args.n_power_iterations,
     )
 
