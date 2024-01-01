@@ -567,6 +567,7 @@ elif args.optimizer == 'sgd':
         lr=args.lr,
         momentum=0.9,
         weight_decay=args.wd,
+        nesterov=True,
     )
     if args.scheduler:
         scheduler = torch.optim.lr_scheduler.MultiStepLR(
@@ -711,8 +712,7 @@ def train(epoch, model):
 
     end = time.time()
 
-    # TODO: change below
-    for i, (x, y) in enumerate(test_loader):
+    for i, (x, y) in enumerate(train_loader):
 
         global_itr = epoch * len(train_loader) + i
         update_lr(optimizer, global_itr)
