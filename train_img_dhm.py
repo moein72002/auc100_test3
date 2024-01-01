@@ -711,7 +711,8 @@ def train(epoch, model):
 
     end = time.time()
 
-    for i, (x, y) in enumerate(train_loader):
+    # TODO: change below
+    for i, (x, y) in enumerate(test_loader):
 
         global_itr = epoch * len(train_loader) + i
         update_lr(optimizer, global_itr)
