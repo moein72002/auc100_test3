@@ -20,7 +20,12 @@ import lib.layers as layers
 import lib.layers.base as base_layers
 from lib.plot_histogram import plot_in_out_histogram
 from lib.lr_scheduler import CosineAnnealingWarmRestarts
+from datetime import datetime
 torch.autograd.set_detect_anomaly(True)
+
+
+current_time = datetime.now().strftime("%H:%M:%S")
+print("Current Time: ", current_time)
 
 # Arguments
 parser = argparse.ArgumentParser()
