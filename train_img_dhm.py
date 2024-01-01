@@ -25,7 +25,7 @@ torch.autograd.set_detect_anomaly(True)
 
 
 current_time = datetime.now().strftime("%H:%M:%S")
-print("Current Time 2: ", current_time)
+print("Current Time 3: ", current_time)
 
 # Arguments
 parser = argparse.ArgumentParser()
