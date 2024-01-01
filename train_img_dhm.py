@@ -18,6 +18,7 @@ import lib.optimizers as optim
 import lib.utils as utils
 import lib.layers as layers
 import lib.layers.base as base_layers
+from lib.plot_histogram import plot_in_out_histogram
 from lib.lr_scheduler import CosineAnnealingWarmRestarts
 torch.autograd.set_detect_anomaly(True)
 
@@ -119,6 +120,13 @@ parser.add_argument('--begin-epoch', type=int, default=0)
 parser.add_argument('--nworkers', type=int, default=4)
 parser.add_argument('--print-freq', help='Print progress every so iterations', type=int, default=20)
 parser.add_argument('--vis-freq', help='Visualize progress every so iterations', type=int, default=500)
+parser.add_argument(
+    '--ood-dataset', type=str, default='cifar100', choices=[
+        'cifar100',
+        'svhn'
+    ]
+)
+
 args = parser.parse_args()
 
 # Random seed
@@ -592,7 +600,7 @@ fixed_z = standard_normal_sample([min(32, args.batchsize),
 criterion = torch.nn.CrossEntropyLoss()
 
 
-def compute_loss(x, model, beta=1.0):
+def compute_loss(x, model, beta=1.0, testing_ood=False):
     bits_per_dim, logits_tensor = torch.zeros(1).to(x), torch.zeros(n_classes).to(x)
     logpz, delta_logp = torch.zeros(1).to(x), torch.zeros(1).to(x)
 
@@ -610,8 +618,11 @@ def compute_loss(x, model, beta=1.0):
 
     (z, delta_logp), logits = model(x, 0)
 
+    # print(f"z.size(): {z.size()}")
+    # print(f"delta_logp.size(): {delta_logp.size()}")
     # log p(z)
     logpz = standard_normal_logprob(z).view(z.size(0), -1).sum(1, keepdim=True)
+    # print(f"logpz.size(): {logpz.size()}")
 
     # log p(x)
     logpx = logpz - beta * delta_logp - np.log(nvals) * (
@@ -619,6 +630,11 @@ def compute_loss(x, model, beta=1.0):
     ) - logpu
     bits_per_dim = -torch.mean(logpx) / (
                 args.imagesize * args.imagesize * im_dim) / np.log(2)
+    
+    if testing_ood:
+        logpz = logpz.detach().cpu().numpy()
+        delta_logp = torch.mean(-delta_logp).detach()
+        return bits_per_dim, logits, logpz, delta_logp
 
     logpz = torch.mean(logpz).detach()
     delta_logp = torch.mean(-delta_logp).detach()
@@ -660,6 +676,25 @@ secmom_meter = utils.RunningAverageMeter(0.97)
 gnorm_meter = utils.RunningAverageMeter(0.97)
 ce_meter = utils.RunningAverageMeter(0.97)
 
+def load_ood_test_loader(ood_dataset_name):
+    if ood_dataset_name == "cifar100":
+        # Load CIFAR-100 dataset with modified labels
+        cifar100_test_dataset = vdsets.CIFAR100(root='./data', train=False, download=True, transform=transform_test)
+        cifar100_labels = torch.zeros(len(cifar100_test_dataset))
+        cifar100_test_dataset.targets = cifar100_labels
+
+        if args.debug:
+            cifar100_test_dataset.data = cifar100_test_dataset.data[:12]
+            cifar100_test_dataset.targets = cifar100_test_dataset.targets[:12]
+
+        cifar100_ood_test_loader = torch.utils.data.DataLoader(
+            cifar100_test_dataset,
+            batch_size=args.val_batchsize,
+            shuffle=False,
+            num_workers=args.nworkers,
+        )
+
+        return cifar100_ood_test_loader
 
 def train(epoch, model):
 
@@ -759,8 +794,7 @@ def train(epoch, model):
         torch.cuda.empty_cache()
         gc.collect()
 
-
-def validate(epoch, model, ema=None):
+def validate(epoch, model, ema=None, ood_test_loader=None):
     """
     Evaluates the cross entropy between p_data and p_model.
     """
@@ -782,10 +816,14 @@ def validate(epoch, model, ema=None):
     total = 0
 
     start = time.time()
+
+    id_logpz_list = []
     with torch.no_grad():
         for i, (x, y) in enumerate(tqdm(test_loader)):
             x = x.to(device)
-            bpd, logits, _, _ = compute_loss(x, model)
+            bpd, logits, logpz, _ = compute_loss(x, model, testing_ood=True)
+            logpz = np.concatenate(logpz, axis=0)
+            id_logpz_list.append(logpz)
             bpd_meter.update(bpd.item(), x.size(0))
 
             y = y.to(device)
@@ -794,6 +832,24 @@ def validate(epoch, model, ema=None):
             _, predicted = logits.max(1)
             total += y.size(0)
             correct += predicted.eq(y).sum().item()
+
+    id_logpz_list = np.concatenate(id_logpz_list, axis=0)
+    # print(f"id_logpz_list: {id_logpz_list}")
+
+    ood_logpz_list = []
+
+    with torch.no_grad():
+        for i, (x, y) in enumerate(tqdm(ood_test_loader)):
+            x = x.to(device)
+            _, _, logpz, _ = compute_loss(x, model, testing_ood=True)
+            logpz = np.concatenate(logpz, axis=0)
+            ood_logpz_list.append(logpz)
+
+    ood_logpz_list = np.concatenate(ood_logpz_list, axis=0)
+    # print(f"ood_logpz_list: {ood_logpz_list}")
+
+    plot_in_out_histogram("log(p(z))", "CIFAR10", id_logpz_list, "CIFAR100", ood_logpz_list, epoch)
+    
     val_time = time.time() - start
 
     if ema is not None:
@@ -844,11 +900,14 @@ def pretty_repr(a):
 
 
 def main():
+    start_train_time = time.time()
     global best_test_bpd
 
     last_checkpoints = []
     lipschitz_constants = []
     ords = []
+
+    ood_test_loader = load_ood_test_loader(args.ood_dataset)
 
     # if args.resume:
     #     validate(args.begin_epoch - 1, model, ema)
@@ -863,9 +922,9 @@ def main():
         logger.info('Order: {}'.format(pretty_repr(ords[-1])))
 
         if args.ema_val:
-            test_bpd = validate(epoch, model, ema)
+            test_bpd = validate(epoch, model, ema, ood_test_loader=ood_test_loader)
         else:
-            test_bpd = validate(epoch, model)
+            test_bpd = validate(epoch, model, ood_test_loader=ood_test_loader)
 
         if args.scheduler and scheduler is not None:
             scheduler.step()
@@ -887,6 +946,10 @@ def main():
             'ema': ema,
             'test_bpd': test_bpd,
         }, os.path.join(args.save, 'models', 'most_recent.pth'))
+
+        time_passed = time.time() - start_train_time
+        if time_passed >= 42000:
+            exit()
 
 
 if __name__ == '__main__':
